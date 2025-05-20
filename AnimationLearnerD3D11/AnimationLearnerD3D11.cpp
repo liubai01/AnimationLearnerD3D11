@@ -18,6 +18,10 @@ ID3D11Device* g_pd3dDevice = nullptr;
 ID3D11DeviceContext* g_pImmediateContext = nullptr;
 IDXGISwapChain* g_pSwapChain = nullptr;
 ID3D11RenderTargetView* g_pRenderTargetView = nullptr;
+ID3D11Texture2D* g_pDepthStencil = nullptr;
+ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
+ID3D11DepthStencilState* g_pDepthStencilState = nullptr;
+
 
 
 
@@ -101,7 +105,32 @@ HRESULT InitD3D()
     if (FAILED(hr))
         return hr;
 
-    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, nullptr);
+    //g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, nullptr);
+
+
+    // 1. 创建深度缓冲区纹理
+    D3D11_TEXTURE2D_DESC depthDesc = {};
+    depthDesc.Width = width;
+    depthDesc.Height = height;
+    depthDesc.MipLevels = 1;
+    depthDesc.ArraySize = 1;
+    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.SampleDesc.Quality = 0;
+    depthDesc.Usage = D3D11_USAGE_DEFAULT;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+
+    hr = g_pd3dDevice->CreateTexture2D(&depthDesc, nullptr, &g_pDepthStencil);
+    if (FAILED(hr))
+        return hr;
+
+    // 2. 创建深度视图
+    hr = g_pd3dDevice->CreateDepthStencilView(g_pDepthStencil, nullptr, &g_pDepthStencilView);
+    if (FAILED(hr))
+        return hr;
+
+    // 3. 设置为渲染目标（颜色 + 深度）
+    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, g_pDepthStencilView);
 
     // 设置视口
     D3D11_VIEWPORT vp;
@@ -112,6 +141,8 @@ HRESULT InitD3D()
     vp.TopLeftX = 0;
     vp.TopLeftY = 0;
     g_pImmediateContext->RSSetViewports(1, &vp);
+
+
 
     return S_OK;
 }
@@ -142,6 +173,7 @@ int Run(App* app)
             // 清屏颜色
             float clearColor[4] = { 0.2f, 0.4f, 0.6f, 1.0f };
             g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, clearColor);
+            g_pImmediateContext->ClearDepthStencilView(g_pDepthStencilView, D3D11_CLEAR_DEPTH | D3D11_CLEAR_STENCIL, 1.0f, 0);
 
             // 1. 设置着色器和输入布局
             g_pImmediateContext->VSSetShader(app->vertexShader, nullptr, 0);
@@ -368,7 +400,7 @@ void UpdateConstant(App* App)
 {
     DirectX::XMMATRIX worldMatrix = DirectX::XMMatrixIdentity();
     // 摄像机放在 (x: 150, y: 150, z: 200)，从斜上方向模型中心看
-    DirectX::XMVECTOR eyePosition = DirectX::XMVectorSet(0.0f, 100.0f, 500.0f, 1.0f);
+    DirectX::XMVECTOR eyePosition = DirectX::XMVectorSet(0.0f, 100.0f, -400.0f, 1.0f);
 
     // 看向模型大致中心，比如 (50, 50, 40)
     DirectX::XMVECTOR focusPoint = DirectX::XMVectorSet(0.0f, 100.0f, 0.0f, 1.0f);
@@ -387,7 +419,7 @@ void UpdateConstant(App* App)
     App->cb.world = DirectX::XMMatrixTranspose(worldMatrix);
     App->cb.view = DirectX::XMMatrixTranspose(viewMatrix);
     App->cb.proj = DirectX::XMMatrixTranspose(projectionMatrix);
-    App->cb.lightDir = { 0.0f, -0.5f, -0.5f };
+    App->cb.lightDir = { -0.5f, -0.5f, 0.5f };
     //App->cb.cameraPos = { 0.0f, 0.0f, -5.0f };
     g_pImmediateContext->UpdateSubresource(App->constantBuffer, 0, nullptr, &App->cb, 0, 0);
     g_pImmediateContext->VSSetConstantBuffers(0, 1, &App->constantBuffer);
