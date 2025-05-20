@@ -6,6 +6,10 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
+#include "App.h"
+#include <memory>
+#include <d3dcompiler.h>
+#pragma comment(lib, "d3dcompiler.lib") 
 
 // 全局变量
 HWND g_hWnd = nullptr;
@@ -14,6 +18,8 @@ ID3D11Device* g_pd3dDevice = nullptr;
 ID3D11DeviceContext* g_pImmediateContext = nullptr;
 IDXGISwapChain* g_pSwapChain = nullptr;
 ID3D11RenderTargetView* g_pRenderTargetView = nullptr;
+
+
 
 // 窗口过程函数
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -35,7 +41,7 @@ HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
     RegisterClassEx(&wc);
 
     g_hWnd = CreateWindow(wc.lpszClassName, L"DirectX 11 简单示例",
-        WS_OVERLAPPEDWINDOW, 100, 100, 800, 600,
+        WS_OVERLAPPEDWINDOW, 100, 100, 1024, 768,
         nullptr, nullptr, wc.hInstance, nullptr);
 
     if (!g_hWnd)
@@ -121,7 +127,7 @@ void Cleanup()
 }
 
 // 主消息循环和渲染
-int Run()
+int Run(App* app)
 {
     MSG msg = { 0 };
     while (msg.message != WM_QUIT)
@@ -137,14 +143,42 @@ int Run()
             float clearColor[4] = { 0.2f, 0.4f, 0.6f, 1.0f };
             g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, clearColor);
 
-            // 交换前后缓冲区
+            // 1. 设置着色器和输入布局
+            g_pImmediateContext->VSSetShader(app->vertexShader, nullptr, 0);
+            g_pImmediateContext->PSSetShader(app->pixelShader, nullptr, 0);
+            g_pImmediateContext->IASetInputLayout(app->inputLayout);
+
+            // 2. 设置缓冲区
+            UINT stride = sizeof(Vertex);
+            UINT offset = 0;
+            g_pImmediateContext->IASetVertexBuffers(0, 1, &app->vertexBuffer, &stride, &offset);
+            g_pImmediateContext->IASetIndexBuffer(app->indexBuffer, DXGI_FORMAT_R32_UINT, 0);
+            g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+            // 3. 更新常量缓冲区
+            //ConstantBuffer cb;
+            //cb.world = XMMatrixTranspose(app->worldMatrix);
+            //cb.view = XMMatrixTranspose(app->viewMatrix);
+            //cb.proj = XMMatrixTranspose(app->projectionMatrix);
+            //cb.lightDir = XMFLOAT4(-0.5f, -1.0f, -0.3f, 0.0f); // 示例光照方向
+
+            g_pImmediateContext->UpdateSubresource(app->constantBuffer, 0, nullptr, &app->cb, 0, 0);
+
+            // 4. 绑定常量缓冲区到 Shader
+            g_pImmediateContext->VSSetConstantBuffers(0, 1, &app->constantBuffer);
+            g_pImmediateContext->PSSetConstantBuffers(0, 1, &app->constantBuffer);
+
+            // 5. 绘制
+            g_pImmediateContext->DrawIndexed((UINT)app->indices.size(), 0, 0);
+
+            // Present
             g_pSwapChain->Present(1, 0);
         }
     }
     return (int)msg.wParam;
 }
 
-bool LoadModel(const std::string& filePath)
+bool LoadModel(const std::string& filePath, App* App)
 {
     Assimp::Importer importer;
 
@@ -160,27 +194,211 @@ bool LoadModel(const std::string& filePath)
         return false;
     }
 
-    // 仅示例处理第一个 Mesh
-    aiMesh* mesh = scene->mMeshes[0];
-    for (unsigned int i = 0; i < mesh->mNumVertices; ++i)
-    {
-        aiVector3D pos = mesh->mVertices[i];
-        aiVector3D normal = mesh->HasNormals() ? mesh->mNormals[i] : aiVector3D(0, 0, 0);
-        aiVector3D uv = mesh->HasTextureCoords(0) ? mesh->mTextureCoords[0][i] : aiVector3D(0, 0, 0);
+    //// 仅示例处理第一个 Mesh
+    //aiMesh* mesh = scene->mMeshes[0];
 
-        printf("Vertex %u: Pos(%.2f, %.2f, %.2f), Normal(%.2f, %.2f, %.2f), UV(%.2f, %.2f)\n",
-            i,
-            pos.x, pos.y, pos.z,
-            normal.x, normal.y, normal.z,
-            uv.x, uv.y);
+    //for (unsigned int i = 0; i < mesh->mNumVertices; ++i)
+    //{
+    //    aiVector3D pos = mesh->mVertices[i];
+    //    aiVector3D normal = mesh->HasNormals() ? mesh->mNormals[i] : aiVector3D(0, 0, 0);
+    //    aiVector3D uv = mesh->HasTextureCoords(0) ? mesh->mTextureCoords[0][i] : aiVector3D(0, 0, 0);
+
+    //    App->vertices.push_back({
+    //        { pos.x, pos.y, pos.z },
+    //        { normal.x, normal.y, normal.z },
+    //        { uv.x, uv.y }
+    //        });
+    //}
+
+    //for (unsigned int i = 0; i < mesh->mNumFaces; ++i)
+    //{
+    //    const aiFace& face = mesh->mFaces[i];
+    //    for (unsigned int j = 0; j < face.mNumIndices; ++j)
+    //    {
+    //        App->indices.push_back(face.mIndices[j]);
+    //    }
+    //}
+
+    for (unsigned int i = 0; i < scene->mNumMeshes; ++i)
+    {
+        aiMesh* mesh = scene->mMeshes[i];
+
+        size_t baseVertex = App->vertices.size();
+
+        for (unsigned int v = 0; v < mesh->mNumVertices; ++v)
+        {
+            aiVector3D pos = mesh->mVertices[v];
+            aiVector3D normal = mesh->HasNormals() ? mesh->mNormals[v] : aiVector3D(0, 0, 0);
+            aiVector3D uv = mesh->HasTextureCoords(0) ? mesh->mTextureCoords[0][v] : aiVector3D(0, 0, 0);
+
+            App->vertices.push_back({
+                { pos.x, pos.y, pos.z },
+                { normal.x, normal.y, normal.z },
+                { uv.x, uv.y }
+                });
+        }
+
+        for (unsigned int f = 0; f < mesh->mNumFaces; ++f)
+        {
+            const aiFace& face = mesh->mFaces[f];
+            for (unsigned int j = 0; j < face.mNumIndices; ++j)
+            {
+                App->indices.push_back(baseVertex + face.mIndices[j]);
+            }
+        }
     }
+
+
+
+    App->vbd = {};
+    App->vbd.Usage = D3D11_USAGE_DEFAULT;
+    App->vbd.ByteWidth = sizeof(Vertex) * App->vertices.size();
+    App->vbd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+    App->vinitData = {};
+    App->vinitData.pSysMem = App->vertices.data();
+
+    App->vertexBuffer = nullptr;
+    g_pd3dDevice->CreateBuffer(&App->vbd, &App->vinitData, &App->vertexBuffer);
+
+    App->ibd = {};
+    App->ibd.Usage = D3D11_USAGE_DEFAULT;
+    App->ibd.ByteWidth = sizeof(UINT) * App->indices.size();
+    App->ibd.BindFlags = D3D11_BIND_INDEX_BUFFER;
+
+    App->iinitData = {};
+    App->iinitData.pSysMem = App->indices.data();
+
+    App->indexBuffer = nullptr;
+    g_pd3dDevice->CreateBuffer(&App->ibd, &App->iinitData, &App->indexBuffer);
+
+    App->constantBuffer = nullptr;
+    App->cbd = {};
+    App->cbd.Usage = D3D11_USAGE_DEFAULT;
+    App->cbd.ByteWidth = sizeof(ConstantBuffer);
+    App->cbd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
+    App->cbd.CPUAccessFlags = 0;
+    g_pd3dDevice->CreateBuffer(&App->cbd, nullptr, &App->constantBuffer);
 
     return true;
 }
 
 
+bool InitShaders(App* app)
+{
+    // 编译 Vertex Shader
+    ID3DBlob* vsBlob = nullptr;
+    ID3DBlob* errorBlob = nullptr;
+    HRESULT hr = D3DCompileFromFile(
+        L"data/PhongShader.hlsl",
+        nullptr, nullptr,
+        "VSMain", "vs_5_0",
+        D3DCOMPILE_ENABLE_STRICTNESS, 0,
+        &vsBlob, &errorBlob);
+
+    if (FAILED(hr))
+    {
+        if (errorBlob)
+        {
+            OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+            errorBlob->Release();
+        }
+        return false;
+    }
+
+    // 创建 Vertex Shader
+    hr = g_pd3dDevice->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &app->vertexShader);
+    if (FAILED(hr))
+    {
+        vsBlob->Release();
+        return false;
+    }
+
+    // 编译 Pixel Shader
+    ID3DBlob* psBlob = nullptr;
+    hr = D3DCompileFromFile(
+        L"data/PhongShader.hlsl",
+        nullptr, nullptr,
+        "PSMain", "ps_5_0",
+        D3DCOMPILE_ENABLE_STRICTNESS, 0,
+        &psBlob, &errorBlob);
+
+    if (FAILED(hr))
+    {
+        if (errorBlob)
+        {
+            OutputDebugStringA((char*)errorBlob->GetBufferPointer());
+            errorBlob->Release();
+        }
+        vsBlob->Release();
+        return false;
+    }
+
+    hr = g_pd3dDevice->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &app->pixelShader);
+    psBlob->Release();
+    if (FAILED(hr))
+    {
+        vsBlob->Release();
+        return false;
+    }
+
+    // 定义顶点输入布局
+    D3D11_INPUT_ELEMENT_DESC layout[] =
+    {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0,                             D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "NORMAL",   0, DXGI_FORMAT_R32G32B32_FLOAT, 0, sizeof(float) * 3,              D3D11_INPUT_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT,    0, sizeof(float) * 6,              D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+
+    hr = g_pd3dDevice->CreateInputLayout(
+        layout, ARRAYSIZE(layout),
+        vsBlob->GetBufferPointer(),
+        vsBlob->GetBufferSize(),
+        &app->inputLayout);
+    vsBlob->Release();
+
+    if (FAILED(hr))
+        return false;
+
+    return true;
+}
+
+
+void UpdateConstant(App* App)
+{
+    DirectX::XMMATRIX worldMatrix = DirectX::XMMatrixIdentity();
+    // 摄像机放在 (x: 150, y: 150, z: 200)，从斜上方向模型中心看
+    DirectX::XMVECTOR eyePosition = DirectX::XMVectorSet(0.0f, 100.0f, 500.0f, 1.0f);
+
+    // 看向模型大致中心，比如 (50, 50, 40)
+    DirectX::XMVECTOR focusPoint = DirectX::XMVectorSet(0.0f, 100.0f, 0.0f, 1.0f);
+    DirectX::XMVECTOR upDirection = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);  // 上方向
+
+    DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixLookAtLH(eyePosition, focusPoint, upDirection);
+
+    float fovAngleY = DirectX::XMConvertToRadians(45.0f);
+    float aspectRatio = 800.0f / 600.0f;
+    float nearZ = 0.1f;
+    float farZ = 5000.0f;
+
+    DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixPerspectiveFovLH(fovAngleY, aspectRatio, nearZ, farZ);
+
+
+    App->cb.world = DirectX::XMMatrixTranspose(worldMatrix);
+    App->cb.view = DirectX::XMMatrixTranspose(viewMatrix);
+    App->cb.proj = DirectX::XMMatrixTranspose(projectionMatrix);
+    App->cb.lightDir = { 0.0f, -0.5f, -0.5f };
+    //App->cb.cameraPos = { 0.0f, 0.0f, -5.0f };
+    g_pImmediateContext->UpdateSubresource(App->constantBuffer, 0, nullptr, &App->cb, 0, 0);
+    g_pImmediateContext->VSSetConstantBuffers(0, 1, &App->constantBuffer);
+    g_pImmediateContext->PSSetConstantBuffers(0, 1, &App->constantBuffer);
+}
+
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
+    std::unique_ptr<App> app_inst = std::make_unique<App>();
+
     if (FAILED(InitWindow(hInstance, nCmdShow)))
         return 0;
 
@@ -190,13 +408,21 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
         return 0;
     }
 
-    if (!LoadModel("data/Taunt.fbx"))
+    if (FAILED(InitShaders(app_inst.get())))
+    {
+		Cleanup();
+		return 0;
+	}
+
+    if (!LoadModel("data/Taunt.fbx", app_inst.get()))
     {
         Cleanup();
         return 0;
     }
 
-    int ret = Run();
+    UpdateConstant(app_inst.get());
+
+    int ret = Run(app_inst.get());
 
     Cleanup();
 
