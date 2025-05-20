@@ -2,6 +2,11 @@
 #include <d3d11.h>
 #pragma comment(lib, "d3d11.lib")
 
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+
+
 // 全局变量
 HWND g_hWnd = nullptr;
 D3D_FEATURE_LEVEL g_featureLevel = D3D_FEATURE_LEVEL_11_0;
@@ -139,12 +144,53 @@ int Run()
     return (int)msg.wParam;
 }
 
+bool LoadModel(const std::string& filePath)
+{
+    Assimp::Importer importer;
+
+    const aiScene* scene = importer.ReadFile(
+        filePath,
+        aiProcess_Triangulate | aiProcess_ConvertToLeftHanded |
+        aiProcess_JoinIdenticalVertices | aiProcess_GenNormals
+    );
+
+    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+    {
+        MessageBoxA(nullptr, importer.GetErrorString(), "Assimp Error", MB_OK | MB_ICONERROR);
+        return false;
+    }
+
+    // 仅示例处理第一个 Mesh
+    aiMesh* mesh = scene->mMeshes[0];
+    for (unsigned int i = 0; i < mesh->mNumVertices; ++i)
+    {
+        aiVector3D pos = mesh->mVertices[i];
+        aiVector3D normal = mesh->HasNormals() ? mesh->mNormals[i] : aiVector3D(0, 0, 0);
+        aiVector3D uv = mesh->HasTextureCoords(0) ? mesh->mTextureCoords[0][i] : aiVector3D(0, 0, 0);
+
+        printf("Vertex %u: Pos(%.2f, %.2f, %.2f), Normal(%.2f, %.2f, %.2f), UV(%.2f, %.2f)\n",
+            i,
+            pos.x, pos.y, pos.z,
+            normal.x, normal.y, normal.z,
+            uv.x, uv.y);
+    }
+
+    return true;
+}
+
+
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
     if (FAILED(InitWindow(hInstance, nCmdShow)))
         return 0;
 
     if (FAILED(InitD3D()))
+    {
+        Cleanup();
+        return 0;
+    }
+
+    if (!LoadModel("data/Taunt.fbx"))
     {
         Cleanup();
         return 0;
