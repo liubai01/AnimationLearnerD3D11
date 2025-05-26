@@ -11,6 +11,16 @@
 #include <d3dcompiler.h>
 #pragma comment(lib, "d3dcompiler.lib") 
 
+// For std::cout
+#include <iostream>
+#include <vector>
+#include <functional>
+#include <algorithm>
+
+#include <map>
+#include <string>
+
+
 // 全局变量
 HWND g_hWnd = nullptr;
 D3D_FEATURE_LEVEL g_featureLevel = D3D_FEATURE_LEVEL_11_0;
@@ -22,7 +32,15 @@ ID3D11Texture2D* g_pDepthStencil = nullptr;
 ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
 ID3D11DepthStencilState* g_pDepthStencilState = nullptr;
 
-
+void RedirectIOToConsole()
+{
+    AllocConsole();
+    FILE* fp;
+    freopen_s(&fp, "CONOUT$", "w", stdout);
+    freopen_s(&fp, "CONOUT$", "w", stderr);
+    freopen_s(&fp, "CONIN$", "r", stdin);
+    std::ios::sync_with_stdio();
+}
 
 
 // 窗口过程函数
@@ -44,7 +62,7 @@ HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
                       L"DX11SampleClass", nullptr };
     RegisterClassEx(&wc);
 
-    g_hWnd = CreateWindow(wc.lpszClassName, L"DirectX 11 简单示例",
+    g_hWnd = CreateWindow(wc.lpszClassName, L"FBX Animation Loader",
         WS_OVERLAPPEDWINDOW, 100, 100, 1024, 768,
         nullptr, nullptr, wc.hInstance, nullptr);
 
@@ -53,6 +71,8 @@ HRESULT InitWindow(HINSTANCE hInstance, int nCmdShow)
 
     ShowWindow(g_hWnd, nCmdShow);
     UpdateWindow(g_hWnd);
+
+    RedirectIOToConsole();
 
     return S_OK;
 }
@@ -188,11 +208,11 @@ int Run(App* app)
             g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 
             // 3. 更新常量缓冲区
-            //ConstantBuffer cb;
-            //cb.world = XMMatrixTranspose(app->worldMatrix);
-            //cb.view = XMMatrixTranspose(app->viewMatrix);
-            //cb.proj = XMMatrixTranspose(app->projectionMatrix);
-            //cb.lightDir = XMFLOAT4(-0.5f, -1.0f, -0.3f, 0.0f); // 示例光照方向
+            ConstantBuffer cb;
+            cb.world = DirectX::XMMatrixTranspose(app->cb.world);
+            cb.view = DirectX::XMMatrixTranspose(app->cb.view);
+            cb.proj = DirectX::XMMatrixTranspose(app->cb.proj);
+            cb.lightDir = DirectX::XMFLOAT3(-0.5f, -1.0f, -0.3f); // 示例光照方向
 
             g_pImmediateContext->UpdateSubresource(app->constantBuffer, 0, nullptr, &app->cb, 0, 0);
 
@@ -203,11 +223,48 @@ int Run(App* app)
             // 5. 绘制
             g_pImmediateContext->DrawIndexed((UINT)app->indices.size(), 0, 0);
 
+            // 设置线段拓扑(谷歌)
+            g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+            // 绑定骨骼线顶点缓冲区
+            UINT stride2 = sizeof(aiVector3D);
+            UINT offset2 = 0;
+            g_pImmediateContext->IASetVertexBuffers(0, 1, &app->boneLineVB, &stride2, &offset2);
+            // 绘制
+            g_pImmediateContext->Draw(app->boneLineVertexCount, 0);
+
             // Present
             g_pSwapChain->Present(1, 0);
         }
     }
     return (int)msg.wParam;
+}
+
+// 递归遍历节点，收集骨骼节点的世界变换
+void CollectBonePositions(aiNode* node, const aiMatrix4x4& parentTransform,
+    std::map<std::string, aiVector3D>& bonePositions)
+{
+    aiMatrix4x4 globalTransform = parentTransform * node->mTransformation;
+    bonePositions[node->mName.C_Str()] = aiVector3D(globalTransform.a4, globalTransform.b4, globalTransform.c4);
+
+    for (unsigned int i = 0; i < node->mNumChildren; ++i)
+        CollectBonePositions(node->mChildren[i], globalTransform, bonePositions);
+}
+
+// 收集骨骼连线
+void CollectBoneLines(aiNode* node, const std::map<std::string, aiVector3D>& bonePositions,
+    std::vector<aiVector3D>& lineVertices)
+{
+    for (unsigned int i = 0; i < node->mNumChildren; ++i)
+    {
+        aiNode* child = node->mChildren[i];
+        // 只要父子都在骨骼表里，就连线
+        if (bonePositions.count(node->mName.C_Str()) && bonePositions.count(child->mName.C_Str()))
+        {
+            lineVertices.push_back(bonePositions.at(node->mName.C_Str()));
+            lineVertices.push_back(bonePositions.at(child->mName.C_Str()));
+        }
+        CollectBoneLines(child, bonePositions, lineVertices);
+    }
 }
 
 bool LoadModel(const std::string& filePath, App* App)
@@ -225,31 +282,6 @@ bool LoadModel(const std::string& filePath, App* App)
         MessageBoxA(nullptr, importer.GetErrorString(), "Assimp Error", MB_OK | MB_ICONERROR);
         return false;
     }
-
-    //// 仅示例处理第一个 Mesh
-    //aiMesh* mesh = scene->mMeshes[0];
-
-    //for (unsigned int i = 0; i < mesh->mNumVertices; ++i)
-    //{
-    //    aiVector3D pos = mesh->mVertices[i];
-    //    aiVector3D normal = mesh->HasNormals() ? mesh->mNormals[i] : aiVector3D(0, 0, 0);
-    //    aiVector3D uv = mesh->HasTextureCoords(0) ? mesh->mTextureCoords[0][i] : aiVector3D(0, 0, 0);
-
-    //    App->vertices.push_back({
-    //        { pos.x, pos.y, pos.z },
-    //        { normal.x, normal.y, normal.z },
-    //        { uv.x, uv.y }
-    //        });
-    //}
-
-    //for (unsigned int i = 0; i < mesh->mNumFaces; ++i)
-    //{
-    //    const aiFace& face = mesh->mFaces[i];
-    //    for (unsigned int j = 0; j < face.mNumIndices; ++j)
-    //    {
-    //        App->indices.push_back(face.mIndices[j]);
-    //    }
-    //}
 
     for (unsigned int i = 0; i < scene->mNumMeshes; ++i)
     {
@@ -278,9 +310,49 @@ bool LoadModel(const std::string& filePath, App* App)
                 App->indices.push_back(baseVertex + face.mIndices[j]);
             }
         }
+
+        // 代码加在这里，打印aiMesh* mesh的信息
+        // 打印该 mesh 的所有骨骼名称和位置
+        if (mesh->HasBones()) {
+            std::cout << "Mesh " << i << " ("
+                << (mesh->mName.length > 0 ? mesh->mName.C_Str() : "[Unnamed]")
+                << ") has " << mesh->mNumBones << " bones:" << std::endl;
+            for (unsigned int b = 0; b < mesh->mNumBones; ++b) {
+                aiBone* bone = mesh->mBones[b];
+                // mOffsetMatrix 的 a4, b4, c4 分别是 x, y, z 平移分量
+                const aiMatrix4x4& m = bone->mOffsetMatrix;
+                float x = m.a4, y = m.b4, z = m.c4;
+                std::cout << "  Bone " << b << ": "
+                    << (bone->mName.length > 0 ? bone->mName.C_Str() : "[Unnamed]")
+                    << "  Offset(pos): (" << x << ", " << y << ", " << z << ")"
+                    << std::endl;
+            }
+
+            // 1. 收集所有骨骼节点的世界空间位置
+            std::map<std::string, aiVector3D> bonePositions;
+            CollectBonePositions(scene->mRootNode, aiMatrix4x4(), bonePositions);
+
+            // 2. 生成骨骼连线顶点
+            std::vector<aiVector3D> boneLines;
+            CollectBoneLines(scene->mRootNode, bonePositions, boneLines);
+
+            // 3. 创建线段顶点缓冲区
+            if (!boneLines.empty()) {
+                D3D11_BUFFER_DESC bd = {};
+                bd.Usage = D3D11_USAGE_DEFAULT;
+                bd.ByteWidth = UINT(sizeof(aiVector3D) * boneLines.size());
+                bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+                D3D11_SUBRESOURCE_DATA initData = {};
+                initData.pSysMem = boneLines.data();
+                ID3D11Buffer* boneLineVB = nullptr;
+                g_pd3dDevice->CreateBuffer(&bd, &initData, &boneLineVB);
+
+                // 保存到 App 结构体里，渲染时用
+                App->boneLineVB = boneLineVB;
+                App->boneLineVertexCount = boneLines.size();
+            }
+        }
     }
-
-
 
     App->vbd = {};
     App->vbd.Usage = D3D11_USAGE_DEFAULT;
