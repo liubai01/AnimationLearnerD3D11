@@ -34,6 +34,8 @@ ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
 ID3D11DepthStencilState* g_pDepthStencilState = nullptr;
 std::chrono::steady_clock::time_point g_startTime;
 
+UINT g_width = 1024, g_height = 768; // 全局变量
+
 void UpdateConstant(App* App, float time);
 
 void RedirectIOToConsole()
@@ -46,12 +48,80 @@ void RedirectIOToConsole()
     std::ios::sync_with_stdio();
 }
 
+void ResizeRenderTarget(UINT width, UINT height)
+{
+    g_width = width;
+    g_height = height;
+
+    if (!g_pSwapChain) return;
+
+    // 释放旧的视图和缓冲区
+    if (g_pImmediateContext) g_pImmediateContext->OMSetRenderTargets(0, 0, 0);
+    if (g_pRenderTargetView) { g_pRenderTargetView->Release(); g_pRenderTargetView = nullptr; }
+    if (g_pDepthStencilView) { g_pDepthStencilView->Release(); g_pDepthStencilView = nullptr; }
+    if (g_pDepthStencil) { g_pDepthStencil->Release();     g_pDepthStencil = nullptr; }
+
+    // 调整交换链缓冲区大小
+    HRESULT hr = g_pSwapChain->ResizeBuffers(0, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr)) return;
+
+    // 重新获取后备缓冲区并创建RTV
+    ID3D11Texture2D* pBackBuffer = nullptr;
+    hr = g_pSwapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&pBackBuffer);
+    if (FAILED(hr)) return;
+
+    hr = g_pd3dDevice->CreateRenderTargetView(pBackBuffer, nullptr, &g_pRenderTargetView);
+    pBackBuffer->Release();
+    if (FAILED(hr)) return;
+
+    // 创建新的深度缓冲区和视图
+    D3D11_TEXTURE2D_DESC depthDesc = {};
+    depthDesc.Width = width;
+    depthDesc.Height = height;
+    depthDesc.MipLevels = 1;
+    depthDesc.ArraySize = 1;
+    depthDesc.Format = DXGI_FORMAT_D24_UNORM_S8_UINT;
+    depthDesc.SampleDesc.Count = 1;
+    depthDesc.SampleDesc.Quality = 0;
+    depthDesc.Usage = D3D11_USAGE_DEFAULT;
+    depthDesc.BindFlags = D3D11_BIND_DEPTH_STENCIL;
+
+    hr = g_pd3dDevice->CreateTexture2D(&depthDesc, nullptr, &g_pDepthStencil);
+    if (FAILED(hr)) return;
+
+    hr = g_pd3dDevice->CreateDepthStencilView(g_pDepthStencil, nullptr, &g_pDepthStencilView);
+    if (FAILED(hr)) return;
+
+    // 重新绑定渲染目标
+    g_pImmediateContext->OMSetRenderTargets(1, &g_pRenderTargetView, g_pDepthStencilView);
+
+    // 更新视口
+    D3D11_VIEWPORT vp;
+    vp.Width = (FLOAT)width;
+    vp.Height = (FLOAT)height;
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    vp.TopLeftX = 0;
+    vp.TopLeftY = 0;
+    g_pImmediateContext->RSSetViewports(1, &vp);
+}
+
 
 // 窗口过程函数
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    if (message == WM_DESTROY)
+    switch (message)
     {
+    case WM_SIZE:
+        if (g_pSwapChain && wParam != SIZE_MINIMIZED)
+        {
+            UINT width = LOWORD(lParam);
+            UINT height = HIWORD(lParam);
+            // 这里调用你自定义的重建RTV/DSV的函数
+            ResizeRenderTarget(width, height);
+        }
+        break;
+    case WM_DESTROY:
         PostQuitMessage(0);
         return 0;
     }
@@ -566,7 +636,7 @@ void UpdateConstant(App* App, float time)
     DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixLookAtLH(eyePosition, focusPoint, upDirection);
 
     float fovAngleY = DirectX::XMConvertToRadians(45.0f);
-    float aspectRatio = 800.0f / 600.0f;
+    float aspectRatio = (float)g_width / (float)g_height;
     float nearZ = 0.1f;
     float farZ = 5000.0f;
 
