@@ -45,6 +45,10 @@ class App
     ID3D11PixelShader* pixelShader = nullptr;
     ID3D11InputLayout* inputLayout = nullptr;
 
+    ID3D11VertexShader* boneLineVS = nullptr;
+    ID3D11PixelShader* boneLinePS = nullptr;
+    ID3D11InputLayout* boneLineLayout = nullptr;
+
     ID3D11Buffer* boneLineVB = nullptr;
     size_t boneLineVertexCount = 0;
 };

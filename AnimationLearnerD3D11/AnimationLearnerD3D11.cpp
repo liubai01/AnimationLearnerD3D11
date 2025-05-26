@@ -19,6 +19,7 @@
 
 #include <map>
 #include <string>
+#include <chrono>
 
 
 // 全局变量
@@ -31,6 +32,9 @@ ID3D11RenderTargetView* g_pRenderTargetView = nullptr;
 ID3D11Texture2D* g_pDepthStencil = nullptr;
 ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
 ID3D11DepthStencilState* g_pDepthStencilState = nullptr;
+std::chrono::steady_clock::time_point g_startTime;
+
+void UpdateConstant(App* App, float time);
 
 void RedirectIOToConsole()
 {
@@ -181,6 +185,8 @@ void Cleanup()
 int Run(App* app)
 {
     MSG msg = { 0 };
+    g_startTime = std::chrono::steady_clock::now();
+
     while (msg.message != WM_QUIT)
     {
         if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
@@ -190,6 +196,11 @@ int Run(App* app)
         }
         else
         {
+
+            auto now = std::chrono::steady_clock::now();
+            float time = std::chrono::duration<float>(now - g_startTime).count();
+            UpdateConstant(app, time);
+
             // 清屏颜色
             float clearColor[4] = { 0.2f, 0.4f, 0.6f, 1.0f };
             g_pImmediateContext->ClearRenderTargetView(g_pRenderTargetView, clearColor);
@@ -223,14 +234,43 @@ int Run(App* app)
             // 5. 绘制
             g_pImmediateContext->DrawIndexed((UINT)app->indices.size(), 0, 0);
 
-            // 设置线段拓扑(谷歌)
-            g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+            // 2. 渲染骨骼线
+            // 禁用深度测试
+            ID3D11DepthStencilState* pOldDS = nullptr;
+            UINT oldStencilRef = 0;
+            g_pImmediateContext->OMGetDepthStencilState(&pOldDS, &oldStencilRef);
+
+            D3D11_DEPTH_STENCIL_DESC dsDesc = {};
+            dsDesc.DepthEnable = FALSE; // 关闭深度
+            dsDesc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+            dsDesc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+            dsDesc.StencilEnable = FALSE;
+
+            ID3D11DepthStencilState* pNoDepthDS = nullptr;
+            g_pd3dDevice->CreateDepthStencilState(&dsDesc, &pNoDepthDS);
+            g_pImmediateContext->OMSetDepthStencilState(pNoDepthDS, 0);
+
+            // 设置骨骼线shader
+            g_pImmediateContext->VSSetShader(app->boneLineVS, nullptr, 0);
+            g_pImmediateContext->PSSetShader(app->boneLinePS, nullptr, 0);
+            g_pImmediateContext->IASetInputLayout(app->boneLineLayout);
+
             // 绑定骨骼线顶点缓冲区
             UINT stride2 = sizeof(aiVector3D);
             UINT offset2 = 0;
             g_pImmediateContext->IASetVertexBuffers(0, 1, &app->boneLineVB, &stride2, &offset2);
+            g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_LINELIST);
+
+            // 常量缓冲区（用同一个即可）
+            g_pImmediateContext->VSSetConstantBuffers(0, 1, &app->constantBuffer);
+
             // 绘制
             g_pImmediateContext->Draw(app->boneLineVertexCount, 0);
+
+            // 恢复深度状态
+            g_pImmediateContext->OMSetDepthStencilState(pOldDS, oldStencilRef);
+            if (pOldDS) pOldDS->Release();
+            if (pNoDepthDS) pNoDepthDS->Release();
 
             // Present
             g_pSwapChain->Present(1, 0);
@@ -467,16 +507,61 @@ bool InitShaders(App* app)
     return true;
 }
 
+bool InitBoneLineShader(App* app)
+{
+    ID3DBlob* vsBlob = nullptr;
+    ID3DBlob* psBlob = nullptr;
+    ID3DBlob* errorBlob = nullptr;
 
-void UpdateConstant(App* App)
+    HRESULT hr = D3DCompileFromFile(
+        L"data/BoneLineShader.hlsl", nullptr, nullptr,
+        "VSMain", "vs_5_0", 0, 0, &vsBlob, &errorBlob);
+    if (FAILED(hr)) return false;
+
+    hr = g_pd3dDevice->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &app->boneLineVS);
+    if (FAILED(hr)) { vsBlob->Release(); return false; }
+
+    hr = D3DCompileFromFile(
+        L"data/BoneLineShader.hlsl", nullptr, nullptr,
+        "PSMain", "ps_5_0", 0, 0, &psBlob, &errorBlob);
+    if (FAILED(hr)) { vsBlob->Release(); return false; }
+
+    hr = g_pd3dDevice->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &app->boneLinePS);
+    if (FAILED(hr)) { vsBlob->Release(); psBlob->Release(); return false; }
+
+    // 输入布局
+    D3D11_INPUT_ELEMENT_DESC layout[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D11_INPUT_PER_VERTEX_DATA, 0 },
+    };
+    hr = g_pd3dDevice->CreateInputLayout(layout, 1, vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &app->boneLineLayout);
+
+    vsBlob->Release();
+    psBlob->Release();
+
+    return SUCCEEDED(hr);
+}
+
+
+void UpdateConstant(App* App, float time)
 {
     DirectX::XMMATRIX worldMatrix = DirectX::XMMatrixIdentity();
-    // 摄像机放在 (x: 150, y: 150, z: 200)，从斜上方向模型中心看
-    DirectX::XMVECTOR eyePosition = DirectX::XMVectorSet(0.0f, 100.0f, -400.0f, 1.0f);
 
-    // 看向模型大致中心，比如 (50, 50, 40)
+    // 圆周运动参数
+    float radius = 400.0f;
+    float height = 250.0f;
+    float speed = 0.5f; // 每秒转多少圈（弧度/秒）
+
+    // 计算相机位置
+    float angle = speed * time; // 弧度
+    float camX = radius * sinf(angle);
+    float camZ = radius * cosf(angle);
+    float camY = height;
+
+    DirectX::XMVECTOR eyePosition = DirectX::XMVectorSet(camX, camY, camZ, 1.0f);
+
+    // 看向模型中心
     DirectX::XMVECTOR focusPoint = DirectX::XMVectorSet(0.0f, 100.0f, 0.0f, 1.0f);
-    DirectX::XMVECTOR upDirection = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);  // 上方向
+    DirectX::XMVECTOR upDirection = DirectX::XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
     DirectX::XMMATRIX viewMatrix = DirectX::XMMatrixLookAtLH(eyePosition, focusPoint, upDirection);
 
@@ -487,17 +572,15 @@ void UpdateConstant(App* App)
 
     DirectX::XMMATRIX projectionMatrix = DirectX::XMMatrixPerspectiveFovLH(fovAngleY, aspectRatio, nearZ, farZ);
 
-
     App->cb.world = DirectX::XMMatrixTranspose(worldMatrix);
     App->cb.view = DirectX::XMMatrixTranspose(viewMatrix);
     App->cb.proj = DirectX::XMMatrixTranspose(projectionMatrix);
     App->cb.lightDir = { -0.5f, -0.5f, 0.5f };
-    //App->cb.cameraPos = { 0.0f, 0.0f, -5.0f };
+
     g_pImmediateContext->UpdateSubresource(App->constantBuffer, 0, nullptr, &App->cb, 0, 0);
     g_pImmediateContext->VSSetConstantBuffers(0, 1, &App->constantBuffer);
     g_pImmediateContext->PSSetConstantBuffers(0, 1, &App->constantBuffer);
 }
-
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
@@ -518,13 +601,16 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 		return 0;
 	}
 
+    if (!InitBoneLineShader(app_inst.get())) {
+        Cleanup();
+        return 0;
+    }
+
     if (!LoadModel("data/Taunt.fbx", app_inst.get()))
     {
         Cleanup();
         return 0;
     }
-
-    UpdateConstant(app_inst.get());
 
     int ret = Run(app_inst.get());
 
