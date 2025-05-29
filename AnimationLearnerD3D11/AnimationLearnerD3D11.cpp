@@ -34,6 +34,8 @@ ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
 ID3D11DepthStencilState* g_pDepthStencilState = nullptr;
 std::chrono::steady_clock::time_point g_startTime;
 
+Assimp::Importer importer;
+
 UINT g_width = 1024, g_height = 768; // 全局变量
 
 void UpdateConstant(App* App, float time);
@@ -46,6 +48,28 @@ void RedirectIOToConsole()
     freopen_s(&fp, "CONOUT$", "w", stderr);
     freopen_s(&fp, "CONIN$", "r", stdin);
     std::ios::sync_with_stdio();
+}
+
+// 线性插值
+aiVector3D Lerp(const aiVector3D& a, const aiVector3D& b, float t) {
+    return a + (b - a) * t;
+}
+
+// 四元数球面插值
+aiQuaternion Slerp(const aiQuaternion& a, const aiQuaternion& b, float t) {
+    aiQuaternion out;
+    aiQuaternion::Interpolate(out, a, b, t);
+    return out;
+}
+
+// 查找关键帧索引
+template<typename T>
+size_t FindKeyIndex(const std::vector<T>& keys, float time) {
+    for (size_t i = 0; i + 1 < keys.size(); ++i) {
+        if (time < static_cast<float>(keys[i + 1].mTime))
+            return i;
+    }
+    return keys.size() - 2;
 }
 
 void ResizeRenderTarget(UINT width, UINT height)
@@ -377,17 +401,90 @@ void CollectBoneLines(aiNode* node, const std::map<std::string, aiVector3D>& bon
     }
 }
 
+void CollectAnimatedBonePositions(
+    aiNode* node,
+    const aiMatrix4x4& parentTransform,
+    const std::map<std::string, BoneAnimCache>& boneAnimCache,
+    float animTime,
+    std::map<std::string, aiVector3D>& bonePositions)
+{
+    // 默认用节点原始变换
+    aiMatrix4x4 localTransform = node->mTransformation;
+
+    // 如果有动画通道，插值动画
+    auto it = boneAnimCache.find(node->mName.C_Str());
+    if (it != boneAnimCache.end()) {
+        const BoneAnimCache& cache = it->second;
+
+        // 插值位置
+        aiVector3D pos(0, 0, 0);
+        if (!cache.positions.empty()) {
+            if (cache.positions.size() == 1) {
+                pos = cache.positions[0].mValue;
+            }
+            else {
+                size_t idx = FindKeyIndex(cache.positions, animTime);
+                float t = float((animTime - cache.positions[idx].mTime) /
+                    (cache.positions[idx + 1].mTime - cache.positions[idx].mTime));
+                pos = Lerp(cache.positions[idx].mValue, cache.positions[idx + 1].mValue, t);
+            }
+        }
+
+        // 插值旋转
+        aiQuaternion rot;
+        if (!cache.rotations.empty()) {
+            if (cache.rotations.size() == 1) {
+                rot = cache.rotations[0].mValue;
+            }
+            else {
+                size_t idx = FindKeyIndex(cache.rotations, animTime);
+                float t = float((animTime - cache.rotations[idx].mTime) /
+                    (cache.rotations[idx + 1].mTime - cache.rotations[idx].mTime));
+                rot = Slerp(cache.rotations[idx].mValue, cache.rotations[idx + 1].mValue, t);
+            }
+        }
+
+        // 插值缩放
+        aiVector3D scale(1, 1, 1);
+        if (!cache.scalings.empty()) {
+            if (cache.scalings.size() == 1) {
+                scale = cache.scalings[0].mValue;
+            }
+            else {
+                size_t idx = FindKeyIndex(cache.scalings, animTime);
+                float t = float((animTime - cache.scalings[idx].mTime) /
+                    (cache.scalings[idx + 1].mTime - cache.scalings[idx].mTime));
+                scale = Lerp(cache.scalings[idx].mValue, cache.scalings[idx + 1].mValue, t);
+            }
+        }
+
+        // 组装本地变换
+        aiMatrix4x4 matScale, matRot, matTrans;
+        aiMatrix4x4::Scaling(scale, matScale);
+        matRot = aiMatrix4x4(rot.GetMatrix());
+        aiMatrix4x4::Translation(pos, matTrans);
+        localTransform = matTrans * matRot * matScale;
+    }
+
+    aiMatrix4x4 globalTransform = parentTransform * localTransform;
+    bonePositions[node->mName.C_Str()] = aiVector3D(globalTransform.a4, globalTransform.b4, globalTransform.c4);
+
+    for (unsigned int i = 0; i < node->mNumChildren; ++i)
+        CollectAnimatedBonePositions(node->mChildren[i], globalTransform, boneAnimCache, animTime, bonePositions);
+
+}
+
 bool LoadModel(const std::string& filePath, App* App)
 {
-    Assimp::Importer importer;
 
-    const aiScene* scene = importer.ReadFile(
+
+    App->scene = const_cast<aiScene*>(importer.ReadFile(
         filePath,
         aiProcess_Triangulate | aiProcess_ConvertToLeftHanded |
         aiProcess_JoinIdenticalVertices | aiProcess_GenNormals
-    );
+    ));
 
-    if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
+    if (!App->scene || App->scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !App->scene->mRootNode)
     {
         MessageBoxA(nullptr, importer.GetErrorString(), "Assimp Error", MB_OK | MB_ICONERROR);
         return false;
@@ -397,7 +494,7 @@ bool LoadModel(const std::string& filePath, App* App)
     // For the sake of simplicity, load one mesh at a time.
     for (unsigned int i = 0; i < 1; ++i)
     {
-        aiMesh* mesh = scene->mMeshes[i];
+        aiMesh* mesh = App->scene->mMeshes[i];
 
         size_t baseVertex = App->vertices.size();
 
@@ -442,11 +539,11 @@ bool LoadModel(const std::string& filePath, App* App)
 
             // 1. 收集所有骨骼节点的世界空间位置
             std::map<std::string, aiVector3D> bonePositions;
-            CollectBonePositions(scene->mRootNode, aiMatrix4x4(), bonePositions);
+            CollectBonePositions(App->scene->mRootNode, aiMatrix4x4(), bonePositions);
 
             // 2. 生成骨骼连线顶点
             std::vector<aiVector3D> boneLines;
-            CollectBoneLines(scene->mRootNode, bonePositions, boneLines);
+            CollectBoneLines(App->scene->mRootNode, bonePositions, boneLines);
 
             // 3. 创建线段顶点缓冲区
             if (!boneLines.empty()) {
@@ -467,47 +564,57 @@ bool LoadModel(const std::string& filePath, App* App)
     }
 
     // 打印动画信息
-    if (scene->HasAnimations()) {
-        std::cout << "Scene has " << scene->mNumAnimations << " animation(s):" << std::endl;
-        // For the sake of simplicty, print the first animation out.
-        for (unsigned int animIdx = 0; animIdx < 1; ++animIdx) {
-            const aiAnimation* anim = scene->mAnimations[animIdx];
-            std::cout << "  Animation " << animIdx
-                << " Name: " << (anim->mName.length > 0 ? anim->mName.C_Str() : "[Unnamed]")
-                << ", Duration: " << anim->mDuration
-                << ", TicksPerSecond: " << anim->mTicksPerSecond
-                << ", Channels: " << anim->mNumChannels << std::endl;
+    if (App->scene->HasAnimations()) {
+        //std::cout << "Scene has " << scene->mNumAnimations << " animation(s):" << std::endl;
+        const aiAnimation* anim = App->scene->mAnimations[0];
+        //std::cout << "  Animation "
+        //    << " Name: " << (anim->mName.length > 0 ? anim->mName.C_Str() : "[Unnamed]")
+        //    << ", Duration: " << anim->mDuration
+        //    << ", TicksPerSecond: " << anim->mTicksPerSecond
+        //    << ", Channels: " << anim->mNumChannels << std::endl;
 
-            for (unsigned int ch = 0; ch < anim->mNumChannels; ++ch) {
-                const aiNodeAnim* channel = anim->mChannels[ch];
-                std::cout << "    Channel " << ch
-                    << " NodeName: " << (channel->mNodeName.length > 0 ? channel->mNodeName.C_Str() : "[Unnamed]")
-                    << ", PosKeys: " << channel->mNumPositionKeys
-                    << ", RotKeys: " << channel->mNumRotationKeys
-                    << ", ScaleKeys: " << channel->mNumScalingKeys
-                    << std::endl;
+        //for (unsigned int ch = 0; ch < anim->mNumChannels; ++ch) {
+        //    const aiNodeAnim* channel = anim->mChannels[ch];
+        //    std::cout << "    Channel " << ch
+        //        << " NodeName: " << (channel->mNodeName.length > 0 ? channel->mNodeName.C_Str() : "[Unnamed]")
+        //        << ", PosKeys: " << channel->mNumPositionKeys
+        //        << ", RotKeys: " << channel->mNumRotationKeys
+        //        << ", ScaleKeys: " << channel->mNumScalingKeys
+        //        << std::endl;
 
-                // 打印位置关键帧
-                for (unsigned int k = 0; k < channel->mNumPositionKeys; ++k) {
-                    const aiVectorKey& key = channel->mPositionKeys[k];
-                    std::cout << "      PosKey[" << k << "]: time=" << key.mTime
-                        << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
-                }
-                // 打印旋转关键帧
-                for (unsigned int k = 0; k < channel->mNumRotationKeys; ++k) {
-                    const aiQuatKey& key = channel->mRotationKeys[k];
-                    std::cout << "      RotKey[" << k << "]: time=" << key.mTime
-                        << ", value=(w=" << key.mValue.w << ", x=" << key.mValue.x
-                        << ", y=" << key.mValue.y << ", z=" << key.mValue.z << ")\n";
-                }
-                // 打印缩放关键帧
-                for (unsigned int k = 0; k < channel->mNumScalingKeys; ++k) {
-                    const aiVectorKey& key = channel->mScalingKeys[k];
-                    std::cout << "      ScaleKey[" << k << "]: time=" << key.mTime
-                        << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
-                }
-            }
+        //    // 打印位置关键帧
+        //    for (unsigned int k = 0; k < channel->mNumPositionKeys; ++k) {
+        //        const aiVectorKey& key = channel->mPositionKeys[k];
+        //        std::cout << "      PosKey[" << k << "]: time=" << key.mTime
+        //            << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
+        //    }
+        //    // 打印旋转关键帧
+        //    for (unsigned int k = 0; k < channel->mNumRotationKeys; ++k) {
+        //        const aiQuatKey& key = channel->mRotationKeys[k];
+        //        std::cout << "      RotKey[" << k << "]: time=" << key.mTime
+        //            << ", value=(w=" << key.mValue.w << ", x=" << key.mValue.x
+        //            << ", y=" << key.mValue.y << ", z=" << key.mValue.z << ")\n";
+        //    }
+        //    // 打印缩放关键帧
+        //    for (unsigned int k = 0; k < channel->mNumScalingKeys; ++k) {
+        //        const aiVectorKey& key = channel->mScalingKeys[k];
+        //        std::cout << "      ScaleKey[" << k << "]: time=" << key.mTime
+        //            << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
+        //    }
+        //}
+
+        App->animDuration = static_cast<float>(anim->mDuration);
+        App->animTicksPerSecond = anim->mTicksPerSecond > 0 ? static_cast<float>(anim->mTicksPerSecond) : 25.0f;
+
+        for (unsigned int ch = 0; ch < anim->mNumChannels; ++ch) {
+            const aiNodeAnim* channel = anim->mChannels[ch];
+            BoneAnimCache cache;
+            cache.positions.assign(channel->mPositionKeys, channel->mPositionKeys + channel->mNumPositionKeys);
+            cache.rotations.assign(channel->mRotationKeys, channel->mRotationKeys + channel->mNumRotationKeys);
+            cache.scalings.assign(channel->mScalingKeys, channel->mScalingKeys + channel->mNumScalingKeys);
+            App->boneAnimCache[channel->mNodeName.C_Str()] = std::move(cache);
         }
+
     }
 
     App->vbd = {};
@@ -696,6 +803,42 @@ void UpdateConstant(App* App, float time)
     g_pImmediateContext->UpdateSubresource(App->constantBuffer, 0, nullptr, &App->cb, 0, 0);
     g_pImmediateContext->VSSetConstantBuffers(0, 1, &App->constantBuffer);
     g_pImmediateContext->PSSetConstantBuffers(0, 1, &App->constantBuffer);
+
+    // 计算动画时间
+    float ticksPerSecond = App->animTicksPerSecond > 0 ? App->animTicksPerSecond : 25.0f;
+    float animTime = fmod(time * ticksPerSecond, App->animDuration);
+
+    // 更新动画骨骼位置
+    std::map<std::string, aiVector3D> bonePositions;
+    if (App->scene && App->scene->mRootNode)
+        CollectAnimatedBonePositions(App->scene->mRootNode, aiMatrix4x4(), App->boneAnimCache, animTime, bonePositions);
+
+    // AnimationLearnerD3D11.cpp (UpdateConstant 末尾)
+    {
+        // 1. 利用动画后的 bonePositions 生成骨骼连线
+        std::vector<aiVector3D> boneLines;
+        CollectBoneLines(App->scene->mRootNode, bonePositions, boneLines);
+
+        // 2. 重新创建骨骼线顶点缓冲区
+        if (!boneLines.empty()) {
+            // 先释放旧的
+            if (App->boneLineVB) {
+                App->boneLineVB->Release();
+                App->boneLineVB = nullptr;
+            }
+            D3D11_BUFFER_DESC bd = {};
+            bd.Usage = D3D11_USAGE_DEFAULT;
+            bd.ByteWidth = UINT(sizeof(aiVector3D) * boneLines.size());
+            bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+            D3D11_SUBRESOURCE_DATA initData = {};
+            initData.pSysMem = boneLines.data();
+            ID3D11Buffer* boneLineVB = nullptr;
+            g_pd3dDevice->CreateBuffer(&bd, &initData, &boneLineVB);
+
+            App->boneLineVB = boneLineVB;
+            App->boneLineVertexCount = boneLines.size();
+        }
+    }
 }
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)

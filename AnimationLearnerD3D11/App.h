@@ -3,6 +3,9 @@
 #include <DirectXMath.h>
 #include <windows.h>
 #include <d3d11.h>
+#include <map>
+#include <string>
+#include <assimp/scene.h>
 #pragma comment(lib, "d3d11.lib")
 
 
@@ -21,6 +24,12 @@ struct ConstantBuffer
     float padding1;
     DirectX::XMFLOAT3 cameraPos;
     float padding2;
+};
+
+struct BoneAnimCache {
+    std::vector<aiVectorKey> positions;
+    std::vector<aiQuatKey> rotations;
+    std::vector<aiVectorKey> scalings;
 };
 
 class App
@@ -51,5 +60,19 @@ class App
 
     ID3D11Buffer* boneLineVB = nullptr;
     size_t boneLineVertexCount = 0;
+
+    std::map<std::string, BoneAnimCache> boneAnimCache; // 动画通道缓存
+    float animDuration = 0.0f;
+    float animTicksPerSecond = 25.0f;
+
+    aiScene* scene;
 };
 
+
+
+//struct App {
+//    // ...已有成员...
+//    std::map<std::string, BoneAnimCache> boneAnimCache; // 动画通道缓存
+//    float animDuration = 0.0f;
+//    float animTicksPerSecond = 25.0f;
+//};
