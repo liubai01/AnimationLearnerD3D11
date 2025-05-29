@@ -393,7 +393,9 @@ bool LoadModel(const std::string& filePath, App* App)
         return false;
     }
 
-    for (unsigned int i = 0; i < scene->mNumMeshes; ++i)
+
+    // For the sake of simplicity, load one mesh at a time.
+    for (unsigned int i = 0; i < 1; ++i)
     {
         aiMesh* mesh = scene->mMeshes[i];
 
@@ -460,6 +462,50 @@ bool LoadModel(const std::string& filePath, App* App)
                 // 保存到 App 结构体里，渲染时用
                 App->boneLineVB = boneLineVB;
                 App->boneLineVertexCount = boneLines.size();
+            }
+        }
+    }
+
+    // 打印动画信息
+    if (scene->HasAnimations()) {
+        std::cout << "Scene has " << scene->mNumAnimations << " animation(s):" << std::endl;
+        // For the sake of simplicty, print the first animation out.
+        for (unsigned int animIdx = 0; animIdx < 1; ++animIdx) {
+            const aiAnimation* anim = scene->mAnimations[animIdx];
+            std::cout << "  Animation " << animIdx
+                << " Name: " << (anim->mName.length > 0 ? anim->mName.C_Str() : "[Unnamed]")
+                << ", Duration: " << anim->mDuration
+                << ", TicksPerSecond: " << anim->mTicksPerSecond
+                << ", Channels: " << anim->mNumChannels << std::endl;
+
+            for (unsigned int ch = 0; ch < anim->mNumChannels; ++ch) {
+                const aiNodeAnim* channel = anim->mChannels[ch];
+                std::cout << "    Channel " << ch
+                    << " NodeName: " << (channel->mNodeName.length > 0 ? channel->mNodeName.C_Str() : "[Unnamed]")
+                    << ", PosKeys: " << channel->mNumPositionKeys
+                    << ", RotKeys: " << channel->mNumRotationKeys
+                    << ", ScaleKeys: " << channel->mNumScalingKeys
+                    << std::endl;
+
+                // 打印位置关键帧
+                for (unsigned int k = 0; k < channel->mNumPositionKeys; ++k) {
+                    const aiVectorKey& key = channel->mPositionKeys[k];
+                    std::cout << "      PosKey[" << k << "]: time=" << key.mTime
+                        << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
+                }
+                // 打印旋转关键帧
+                for (unsigned int k = 0; k < channel->mNumRotationKeys; ++k) {
+                    const aiQuatKey& key = channel->mRotationKeys[k];
+                    std::cout << "      RotKey[" << k << "]: time=" << key.mTime
+                        << ", value=(w=" << key.mValue.w << ", x=" << key.mValue.x
+                        << ", y=" << key.mValue.y << ", z=" << key.mValue.z << ")\n";
+                }
+                // 打印缩放关键帧
+                for (unsigned int k = 0; k < channel->mNumScalingKeys; ++k) {
+                    const aiVectorKey& key = channel->mScalingKeys[k];
+                    std::cout << "      ScaleKey[" << k << "]: time=" << key.mTime
+                        << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
+                }
             }
         }
     }
