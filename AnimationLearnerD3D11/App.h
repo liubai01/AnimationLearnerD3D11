@@ -8,11 +8,18 @@
 #include <assimp/scene.h>
 #pragma comment(lib, "d3d11.lib")
 
+struct BoneMatrixBuffer
+{
+    DirectX::XMMATRIX boneMatrices[128];
+};
 
 struct Vertex {
     DirectX::XMFLOAT3 position;
     DirectX::XMFLOAT3 normal;
     DirectX::XMFLOAT2 texcoord;
+
+    UINT boneIndices[4] = { 0 };
+    float boneWeights[4] = { 0 };
 };
 
 struct ConstantBuffer
@@ -66,13 +73,11 @@ class App
     float animTicksPerSecond = 25.0f;
 
     aiScene* scene;
+
+    ID3D11Buffer* boneMatrixBuffer = nullptr;
+    BoneMatrixBuffer boneMatrixData;
+
+    std::map<std::string, int> boneNameToIndex;
+    std::map<std::string, aiMatrix4x4> boneOffsetMatrices;
 };
 
-
-
-//struct App {
-//    // ...已有成员...
-//    std::map<std::string, BoneAnimCache> boneAnimCache; // 动画通道缓存
-//    float animDuration = 0.0f;
-//    float animTicksPerSecond = 25.0f;
-//};
