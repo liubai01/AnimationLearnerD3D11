@@ -580,9 +580,14 @@ bool LoadModel(const std::string& filePath, App* App)
         return false;
     }
 
+    // 全局清空
+    App->boneNameToIndex.clear();
+    App->boneOffsetMatrices.clear();
+    App->vertices.clear();
+    App->indices.clear();
 
-    // For the sake of simplicity, load one mesh at a time.
-    for (unsigned int i = 0; i < 1; ++i)
+    int boneCount = 0;
+    for (unsigned int i = 0; i < App->scene->mNumMeshes; ++i)
     {
         aiMesh* mesh = App->scene->mMeshes[i];
 
@@ -631,33 +636,7 @@ bool LoadModel(const std::string& filePath, App* App)
                     << std::endl;
             }
 
-            // 1. 收集所有骨骼节点的世界空间位置
-            std::map<std::string, aiVector3D> bonePositions;
-            CollectBonePositions(App->scene->mRootNode, aiMatrix4x4(), bonePositions);
-
-            // 2. 生成骨骼连线顶点
-            std::vector<aiVector3D> boneLines;
-            CollectBoneLines(App->scene->mRootNode, bonePositions, boneLines);
-
-            // 3. 创建线段顶点缓冲区
-            if (!boneLines.empty()) {
-                D3D11_BUFFER_DESC bd = {};
-                bd.Usage = D3D11_USAGE_DEFAULT;
-                bd.ByteWidth = UINT(sizeof(aiVector3D) * boneLines.size());
-                bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-                D3D11_SUBRESOURCE_DATA initData = {};
-                initData.pSysMem = boneLines.data();
-                ID3D11Buffer* boneLineVB = nullptr;
-                g_pd3dDevice->CreateBuffer(&bd, &initData, &boneLineVB);
-
-                // 保存到 App 结构体里，渲染时用
-                App->boneLineVB = boneLineVB;
-                App->boneLineVertexCount = boneLines.size();
-            }
-
             // 1. 建立骨骼名到索引的映射
-            App->boneNameToIndex.clear();
-            int boneCount = 0;
             for (unsigned int b = 0; b < mesh->mNumBones; ++b) {
                 std::string boneName = mesh->mBones[b]->mName.C_Str();
                 if (App->boneNameToIndex.count(boneName) == 0)
@@ -687,6 +666,31 @@ bool LoadModel(const std::string& filePath, App* App)
             }
         }
     }
+
+    // 1. 收集所有骨骼节点的世界空间位置
+    std::map<std::string, aiVector3D> bonePositions;
+    CollectBonePositions(App->scene->mRootNode, aiMatrix4x4(), bonePositions);
+
+    // 2. 生成骨骼连线顶点
+    std::vector<aiVector3D> boneLines;
+    CollectBoneLines(App->scene->mRootNode, bonePositions, boneLines);
+
+    // 3. 创建线段顶点缓冲区
+    if (!boneLines.empty()) {
+        D3D11_BUFFER_DESC bd = {};
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.ByteWidth = UINT(sizeof(aiVector3D) * boneLines.size());
+        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA initData = {};
+        initData.pSysMem = boneLines.data();
+        ID3D11Buffer* boneLineVB = nullptr;
+        g_pd3dDevice->CreateBuffer(&bd, &initData, &boneLineVB);
+
+        // 保存到 App 结构体里，渲染时用
+        App->boneLineVB = boneLineVB;
+        App->boneLineVertexCount = boneLines.size();
+    }
+
 
     // 打印动画信息
     if (App->scene->HasAnimations()) {
