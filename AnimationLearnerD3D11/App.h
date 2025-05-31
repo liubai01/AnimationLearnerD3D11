@@ -28,9 +28,8 @@ struct ConstantBuffer
     DirectX::XMMATRIX view;
     DirectX::XMMATRIX proj;
     DirectX::XMFLOAT3 lightDir;
-    float padding1;
-    DirectX::XMFLOAT3 cameraPos;
-    float padding2;
+    UINT targetBoneIndex;
+    float padding1[3];
 };
 
 struct BoneAnimCache {

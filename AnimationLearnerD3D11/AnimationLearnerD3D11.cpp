@@ -562,7 +562,32 @@ void CollectAnimatedBoneMatrices(
         );
 }
 
+// 递归打印aiNode信息
+void PrintNodeInfo(aiNode* node, int depth = 0)
+{
+    // 缩进
+    for (int i = 0; i < depth; ++i) std::cout << "  ";
 
+    // 打印节点名
+    std::cout << "Node: " << (node->mName.length > 0 ? node->mName.C_Str() : "[Unnamed]");
+
+    // 打印mesh索引
+    if (node->mNumMeshes > 0) {
+        std::cout << " | Meshes: ";
+        for (unsigned int i = 0; i < node->mNumMeshes; ++i) {
+            std::cout << node->mMeshes[i];
+            if (i + 1 < node->mNumMeshes) std::cout << ", ";
+        }
+    }
+
+    // 打印子节点数
+    std::cout << " | Children: " << node->mNumChildren << std::endl;
+
+    // 递归打印子节点
+    for (unsigned int i = 0; i < node->mNumChildren; ++i) {
+        PrintNodeInfo(node->mChildren[i], depth + 1);
+    }
+}
 
 bool LoadModel(const std::string& filePath, App* App)
 {
@@ -580,9 +605,14 @@ bool LoadModel(const std::string& filePath, App* App)
         return false;
     }
 
+    // 全局清空
+    App->boneNameToIndex.clear();
+    App->boneOffsetMatrices.clear();
+    App->vertices.clear();
+    App->indices.clear();
 
-    // For the sake of simplicity, load one mesh at a time.
-    for (unsigned int i = 0; i < 1; ++i)
+    int boneCount = 0;
+    for (unsigned int i = 0; i < App->scene->mNumMeshes; ++i)
     {
         aiMesh* mesh = App->scene->mMeshes[i];
 
@@ -631,33 +661,7 @@ bool LoadModel(const std::string& filePath, App* App)
                     << std::endl;
             }
 
-            // 1. 收集所有骨骼节点的世界空间位置
-            std::map<std::string, aiVector3D> bonePositions;
-            CollectBonePositions(App->scene->mRootNode, aiMatrix4x4(), bonePositions);
-
-            // 2. 生成骨骼连线顶点
-            std::vector<aiVector3D> boneLines;
-            CollectBoneLines(App->scene->mRootNode, bonePositions, boneLines);
-
-            // 3. 创建线段顶点缓冲区
-            if (!boneLines.empty()) {
-                D3D11_BUFFER_DESC bd = {};
-                bd.Usage = D3D11_USAGE_DEFAULT;
-                bd.ByteWidth = UINT(sizeof(aiVector3D) * boneLines.size());
-                bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
-                D3D11_SUBRESOURCE_DATA initData = {};
-                initData.pSysMem = boneLines.data();
-                ID3D11Buffer* boneLineVB = nullptr;
-                g_pd3dDevice->CreateBuffer(&bd, &initData, &boneLineVB);
-
-                // 保存到 App 结构体里，渲染时用
-                App->boneLineVB = boneLineVB;
-                App->boneLineVertexCount = boneLines.size();
-            }
-
             // 1. 建立骨骼名到索引的映射
-            App->boneNameToIndex.clear();
-            int boneCount = 0;
             for (unsigned int b = 0; b < mesh->mNumBones; ++b) {
                 std::string boneName = mesh->mBones[b]->mName.C_Str();
                 if (App->boneNameToIndex.count(boneName) == 0)
@@ -688,45 +692,34 @@ bool LoadModel(const std::string& filePath, App* App)
         }
     }
 
+    // 1. 收集所有骨骼节点的世界空间位置
+    std::map<std::string, aiVector3D> bonePositions;
+    CollectBonePositions(App->scene->mRootNode, aiMatrix4x4(), bonePositions);
+
+    // 2. 生成骨骼连线顶点
+    std::vector<aiVector3D> boneLines;
+    CollectBoneLines(App->scene->mRootNode, bonePositions, boneLines);
+
+    // 3. 创建线段顶点缓冲区
+    if (!boneLines.empty()) {
+        D3D11_BUFFER_DESC bd = {};
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.ByteWidth = UINT(sizeof(aiVector3D) * boneLines.size());
+        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+        D3D11_SUBRESOURCE_DATA initData = {};
+        initData.pSysMem = boneLines.data();
+        ID3D11Buffer* boneLineVB = nullptr;
+        g_pd3dDevice->CreateBuffer(&bd, &initData, &boneLineVB);
+
+        // 保存到 App 结构体里，渲染时用
+        App->boneLineVB = boneLineVB;
+        App->boneLineVertexCount = boneLines.size();
+    }
+
+
     // 打印动画信息
     if (App->scene->HasAnimations()) {
-        //std::cout << "Scene has " << scene->mNumAnimations << " animation(s):" << std::endl;
         const aiAnimation* anim = App->scene->mAnimations[0];
-        //std::cout << "  Animation "
-        //    << " Name: " << (anim->mName.length > 0 ? anim->mName.C_Str() : "[Unnamed]")
-        //    << ", Duration: " << anim->mDuration
-        //    << ", TicksPerSecond: " << anim->mTicksPerSecond
-        //    << ", Channels: " << anim->mNumChannels << std::endl;
-
-        //for (unsigned int ch = 0; ch < anim->mNumChannels; ++ch) {
-        //    const aiNodeAnim* channel = anim->mChannels[ch];
-        //    std::cout << "    Channel " << ch
-        //        << " NodeName: " << (channel->mNodeName.length > 0 ? channel->mNodeName.C_Str() : "[Unnamed]")
-        //        << ", PosKeys: " << channel->mNumPositionKeys
-        //        << ", RotKeys: " << channel->mNumRotationKeys
-        //        << ", ScaleKeys: " << channel->mNumScalingKeys
-        //        << std::endl;
-
-        //    // 打印位置关键帧
-        //    for (unsigned int k = 0; k < channel->mNumPositionKeys; ++k) {
-        //        const aiVectorKey& key = channel->mPositionKeys[k];
-        //        std::cout << "      PosKey[" << k << "]: time=" << key.mTime
-        //            << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
-        //    }
-        //    // 打印旋转关键帧
-        //    for (unsigned int k = 0; k < channel->mNumRotationKeys; ++k) {
-        //        const aiQuatKey& key = channel->mRotationKeys[k];
-        //        std::cout << "      RotKey[" << k << "]: time=" << key.mTime
-        //            << ", value=(w=" << key.mValue.w << ", x=" << key.mValue.x
-        //            << ", y=" << key.mValue.y << ", z=" << key.mValue.z << ")\n";
-        //    }
-        //    // 打印缩放关键帧
-        //    for (unsigned int k = 0; k < channel->mNumScalingKeys; ++k) {
-        //        const aiVectorKey& key = channel->mScalingKeys[k];
-        //        std::cout << "      ScaleKey[" << k << "]: time=" << key.mTime
-        //            << ", value=(" << key.mValue.x << ", " << key.mValue.y << ", " << key.mValue.z << ")\n";
-        //    }
-        //}
 
         App->animDuration = static_cast<float>(anim->mDuration);
         App->animTicksPerSecond = anim->mTicksPerSecond > 0 ? static_cast<float>(anim->mTicksPerSecond) : 25.0f;
@@ -740,6 +733,12 @@ bool LoadModel(const std::string& filePath, App* App)
             App->boneAnimCache[channel->mNodeName.C_Str()] = std::move(cache);
         }
 
+    }
+
+    if (App->scene && App->scene->mRootNode) {
+        std::cout << "==== Scene Node Hierarchy ====" << std::endl;
+        PrintNodeInfo(App->scene->mRootNode);
+        std::cout << "==============================" << std::endl;
     }
 
     App->vbd = {};
@@ -933,6 +932,39 @@ void UpdateConstant(App* App, float time)
     App->cb.view = DirectX::XMMatrixTranspose(viewMatrix);
     App->cb.proj = DirectX::XMMatrixTranspose(projectionMatrix);
     App->cb.lightDir = { -0.5f, -0.5f, 0.5f };
+
+    // === 骨骼索引循环 ===
+    static int lastBoneIndex = -1;
+    static std::vector<std::string> boneNames;
+    static bool boneNamesInitialized = false;
+
+    // 初始化骨骼名列表（只做一次）
+    if (!boneNamesInitialized && !App->boneNameToIndex.empty()) {
+        boneNames.resize(App->boneNameToIndex.size());
+        for (const auto& kv : App->boneNameToIndex) {
+            if (kv.second >= 0 && kv.second < (int)boneNames.size())
+                boneNames[kv.second] = kv.first;
+        }
+        boneNamesInitialized = true;
+    }
+
+    int boneCount = (int)boneNames.size();
+    int period = 2; // 每2秒切换一次
+    int curBoneIndex = 0;
+    if (boneCount > 0) {
+        curBoneIndex = int(time / period) % boneCount;
+        App->cb.targetBoneIndex = curBoneIndex;
+
+        // 只在切换时打印
+        if (curBoneIndex != lastBoneIndex) {
+            std::cout << "[Bone switch] Current bone: " << boneNames[curBoneIndex] << " (index=" << curBoneIndex << ")" << std::endl;
+            lastBoneIndex = curBoneIndex;
+        }
+    }
+    else {
+        App->cb.targetBoneIndex = 0;
+    }
+
 
     g_pImmediateContext->UpdateSubresource(App->constantBuffer, 0, nullptr, &App->cb, 0, 0);
     g_pImmediateContext->VSSetConstantBuffers(0, 1, &App->constantBuffer);
