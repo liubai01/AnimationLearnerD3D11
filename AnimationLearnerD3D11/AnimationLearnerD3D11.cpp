@@ -33,6 +33,9 @@ ID3D11Texture2D* g_pDepthStencil = nullptr;
 ID3D11DepthStencilView* g_pDepthStencilView = nullptr;
 ID3D11DepthStencilState* g_pDepthStencilState = nullptr;
 std::chrono::steady_clock::time_point g_startTime;
+ID3D11RasterizerState* g_pRasterState_NoCull = nullptr;
+
+aiVector3D IK_Position = { 8.2,  21, 5.0 }; // IK目标位置
 
 Assimp::Importer importer;
 
@@ -360,6 +363,24 @@ int Run(App* app)
 
             // 绘制
             g_pImmediateContext->Draw(app->boneLineVertexCount, 0);
+
+            if (app->ikQuadVB)
+            {
+                UINT stride = sizeof(aiVector3D);
+                UINT offset = 0;
+                g_pImmediateContext->IASetVertexBuffers(0, 1, &app->ikQuadVB, &stride, &offset);
+                g_pImmediateContext->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+
+                // 设置双面渲染
+                g_pImmediateContext->RSSetState(g_pRasterState_NoCull);
+
+                g_pImmediateContext->VSSetShader(app->boneLineVS, nullptr, 0);
+                g_pImmediateContext->PSSetShader(app->boneLinePS, nullptr, 0);
+                g_pImmediateContext->IASetInputLayout(app->boneLineLayout);
+
+                g_pImmediateContext->VSSetConstantBuffers(0, 1, &app->constantBuffer);
+                g_pImmediateContext->Draw(36, 0);
+            }
 
             // 恢复深度状态
             g_pImmediateContext->OMSetDepthStencilState(pOldDS, oldStencilRef);
@@ -1028,11 +1049,80 @@ void UpdateConstant(App* App, float time)
             App->boneLineVertexCount = boneLines.size();
         }
     }
+
+    // 构建一个面向相机的 XY 平面小矩形
+    {
+        if (App->ikQuadVB) {
+            App->ikQuadVB->Release();
+            App->ikQuadVB = nullptr;
+        }
+        float halfSize = 2.0f; // 控制立方体半边长度
+        aiVector3D c = IK_Position;
+
+        // 构建 8 个顶点（立方体角）
+        aiVector3D p[8] = {
+            { c.x - halfSize, c.y - halfSize, c.z - halfSize },
+            { c.x - halfSize, c.y + halfSize, c.z - halfSize },
+            { c.x + halfSize, c.y + halfSize, c.z - halfSize },
+            { c.x + halfSize, c.y - halfSize, c.z - halfSize },
+
+            { c.x - halfSize, c.y - halfSize, c.z + halfSize },
+            { c.x - halfSize, c.y + halfSize, c.z + halfSize },
+            { c.x + halfSize, c.y + halfSize, c.z + halfSize },
+            { c.x + halfSize, c.y - halfSize, c.z + halfSize },
+        };
+
+        // 构建 12 个三角形，共 36 个顶点（每个面两个三角形）
+        aiVector3D cubeVerts[36] = {
+            // 前面 z+
+            p[4], p[5], p[6],
+            p[4], p[6], p[7],
+            // 后面 z-
+            p[0], p[1], p[2],
+            p[0], p[2], p[3],
+            // 左面 x-
+            p[0], p[4], p[5],
+            p[0], p[5], p[1],
+            // 右面 x+
+            p[3], p[2], p[6],
+            p[3], p[6], p[7],
+            // 上面 y+
+            p[1], p[5], p[6],
+            p[1], p[6], p[2],
+            // 下面 y-
+            p[0], p[3], p[7],
+            p[0], p[7], p[4],
+        };
+
+        D3D11_BUFFER_DESC bd = {};
+        bd.Usage = D3D11_USAGE_DEFAULT;
+        bd.ByteWidth = sizeof(cubeVerts);
+        bd.BindFlags = D3D11_BIND_VERTEX_BUFFER;
+
+        D3D11_SUBRESOURCE_DATA initData = {};
+        initData.pSysMem = cubeVerts;
+
+        g_pd3dDevice->CreateBuffer(&bd, &initData, &App->ikQuadVB);
+    }
 }
+
+
+void CreateRasterizerStates()
+{
+    D3D11_RASTERIZER_DESC rsDesc = {};
+    rsDesc.FillMode = D3D11_FILL_SOLID;
+    rsDesc.CullMode = D3D11_CULL_NONE; // ❗ 关闭剔除
+    rsDesc.FrontCounterClockwise = FALSE;
+    rsDesc.DepthClipEnable = TRUE;
+
+    g_pd3dDevice->CreateRasterizerState(&rsDesc, &g_pRasterState_NoCull);
+}
+
 
 int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
 {
     std::unique_ptr<App> app_inst = std::make_unique<App>();
+
 
     if (FAILED(InitWindow(hInstance, nCmdShow)))
         return 0;
@@ -1042,6 +1132,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
         Cleanup();
         return 0;
     }
+
+    CreateRasterizerStates();
 
     if (FAILED(InitShaders(app_inst.get())))
     {

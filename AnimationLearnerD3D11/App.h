@@ -78,5 +78,7 @@ class App
 
     std::map<std::string, int> boneNameToIndex;
     std::map<std::string, aiMatrix4x4> boneOffsetMatrices;
+
+    ID3D11Buffer* ikQuadVB = nullptr;
 };
 
